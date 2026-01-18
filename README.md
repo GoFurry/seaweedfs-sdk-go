@@ -11,7 +11,7 @@ It provides convenient methods for file operations, directory operations, metada
 
 ---
 
-## Installation
+## 🚀Installation
 
 ```bash
 go get github.com/GoFurry/seaweedfs-sdk-go
@@ -104,7 +104,7 @@ type FileTags map[string]string
 
 ---
 
-## Common Methods
+## 🧭Common Methods
 
 ### File Upload
 
@@ -152,3 +152,189 @@ service.DeleteTags(ctx, "/file.txt", "tag1")
 size, err := seaweedfs.LocalFileSize("/tmp/file.txt")
 t, err := seaweedfs.ParseSeaweedTime("2026-01-18T00:00:00Z")
 ```
+
+## 🌟 Usage Examples (Gin + curl)
+
+This section demonstrates how to integrate the SeaweedFS Go SDK into a Gin-based HTTP service.
+Each example includes both the Gin handler implementation and the corresponding `curl` command.
+
+---
+
+### 1️⃣ Upload File (Auto Small / Large)
+
+**Gin handler**
+
+```go
+r.POST("/upload", func(c *gin.Context) {
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+
+    dstPath := c.Query("path")
+
+    src, err := file.Open()
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer src.Close()
+
+    err = seaweed.UploadAuto(c.Request.Context(), dstPath, src, file.Size)
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, gin.H{"message": "upload success"})
+})
+```
+
+**curl**
+
+```bash
+curl -X POST "http://localhost:8080/upload?path=/test/hello.txt" \
+  -F "file=@hello.txt"
+```
+
+**Description**
+
+* Automatically selects PUT or chunked upload based on file size
+* Suitable for most general upload scenarios
+
+---
+
+### 2️⃣ Large File Upload (Chunked)
+
+**Gin handler**
+
+```go
+r.POST("/upload_large", func(c *gin.Context) {
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+
+    dstPath := c.Query("path")
+
+    src, err := file.Open()
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer src.Close()
+
+    err = seaweed.UploadLarge(
+        c.Request.Context(),
+        dstPath,
+        src,
+        file.Size,
+        nil,
+    )
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, gin.H{"message": "large upload success"})
+})
+```
+
+**curl**
+
+```bash
+curl -X POST "http://localhost:8080/upload_large?path=/test/big.zip" \
+  -F "file=@big.zip"
+```
+
+**Description**
+
+* Chunked upload with retry support
+* Suitable for large files or unstable networks
+
+---
+
+### 3️⃣ Download File (Streaming)
+
+**Gin handler**
+
+```go
+r.GET("/download", func(c *gin.Context) {
+    filePath := c.Query("path")
+
+    reader, headers, err := seaweed.Download(
+        c.Request.Context(),
+        filePath,
+        nil,
+    )
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer reader.Close()
+
+    for k, v := range headers {
+        c.Header(k, v)
+    }
+
+    c.Status(200)
+    _, _ = io.Copy(c.Writer, reader)
+})
+```
+
+**curl**
+
+```bash
+curl -L "http://localhost:8080/download?path=/test/hello.txt" -o hello.txt
+```
+
+**Description**
+
+* Fully streaming download
+* Headers are transparently forwarded to the client
+
+---
+
+### 4️⃣ Get File Metadata (Stat)
+
+**Gin handler**
+
+```go
+r.GET("/stat", func(c *gin.Context) {
+    filePath := c.Query("path")
+
+    stat, err := seaweed.Stat(c.Request.Context(), filePath)
+    if err != nil {
+        c.JSON(404, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, stat)
+})
+```
+
+**curl**
+
+```bash
+curl "http://localhost:8080/stat?path=/test/hello.txt"
+```
+
+**Description**
+
+* Retrieves file metadata including size, mime type, timestamps, and replication info
+* Useful for file management and validation
+
+---
+
+> 💡 **Tip**
+> In production environments, it is recommended to wrap the SDK calls inside your own service layer
+> rather than exposing them directly in HTTP handlers.
+
+
+## 📑Documentation References
+- [SeaweedFS Wiki: Filer-Server-API](https://github.com/seaweedfs/seaweedfs/wiki/Filer-Server-API)
+
+## 🐺License
+This project is open-sourced under the [MIT License](LICENSE), which permits commercial use, modification, and distribution without requiring the original author's copyright notice to be retained.

@@ -11,7 +11,7 @@ SeaweedFS Go SDK 是一个轻量级客户端库，用于通过 HTTP API 访问 [
 
 ---
 
-## 安装
+## 🚀安装
 
 ```bash
 go get github.com/GoFurry/seaweedfs-sdk-go
@@ -104,7 +104,7 @@ type FileTags map[string]string
 
 ---
 
-## 常用方法
+## 🧭常用方法
 
 ### 文件上传
 
@@ -152,3 +152,189 @@ service.DeleteTags(ctx, "/file.txt", "tag1")
 size, err := seaweedfs.LocalFileSize("/tmp/file.txt")
 t, err := seaweedfs.ParseSeaweedTime("2026-01-18T00:00:00Z")
 ```
+
+## 🌟 使用示例（Gin + curl）
+
+本节展示如何将 SeaweedFS Go SDK 集成到基于 Gin 的 HTTP 服务中。
+每个示例都同时包含 **Gin 接口实现代码** 和 **对应的 `curl` 调用方式**，便于理解和快速验证。
+
+---
+
+### 1️⃣ 文件上传（自动选择普通 / 分片）
+
+**Gin 接口代码**
+
+```go
+r.POST("/upload", func(c *gin.Context) {
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+
+    dstPath := c.Query("path")
+
+    src, err := file.Open()
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer src.Close()
+
+    err = seaweed.UploadAuto(c.Request.Context(), dstPath, src, file.Size)
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, gin.H{"message": "upload success"})
+})
+```
+
+**curl 示例**
+
+```bash
+curl -X POST "http://localhost:8080/upload?path=/test/hello.txt" \
+  -F "file=@hello.txt"
+```
+
+**说明**
+
+* 根据文件大小自动选择普通上传或分片上传
+* 适用于绝大多数通用上传场景
+
+---
+
+### 2️⃣ 大文件分片上传
+
+**Gin 接口代码**
+
+```go
+r.POST("/upload_large", func(c *gin.Context) {
+    file, err := c.FormFile("file")
+    if err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+
+    dstPath := c.Query("path")
+
+    src, err := file.Open()
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer src.Close()
+
+    err = seaweed.UploadLarge(
+        c.Request.Context(),
+        dstPath,
+        src,
+        file.Size,
+        nil,
+    )
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, gin.H{"message": "large upload success"})
+})
+```
+
+**curl 示例**
+
+```bash
+curl -X POST "http://localhost:8080/upload_large?path=/test/big.zip" \
+  -F "file=@big.zip"
+```
+
+**说明**
+
+* 支持分片上传、失败重试和回退机制
+* 适用于大文件或网络不稳定场景
+
+---
+
+### 3️⃣ 文件下载（流式）
+
+**Gin 接口代码**
+
+```go
+r.GET("/download", func(c *gin.Context) {
+    filePath := c.Query("path")
+
+    reader, headers, err := seaweed.Download(
+        c.Request.Context(),
+        filePath,
+        nil,
+    )
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer reader.Close()
+
+    for k, v := range headers {
+        c.Header(k, v)
+    }
+
+    c.Status(200)
+    _, _ = io.Copy(c.Writer, reader)
+})
+```
+
+**curl 示例**
+
+```bash
+curl -L "http://localhost:8080/download?path=/test/hello.txt" -o hello.txt
+```
+
+**说明**
+
+* 全程流式下载，避免占用大量内存
+* 自动透传 SeaweedFS 返回的 HTTP Header
+
+---
+
+### 4️⃣ 获取文件元信息（Stat）
+
+**Gin 接口代码**
+
+```go
+r.GET("/stat", func(c *gin.Context) {
+    filePath := c.Query("path")
+
+    stat, err := seaweed.Stat(c.Request.Context(), filePath)
+    if err != nil {
+        c.JSON(404, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(200, stat)
+})
+```
+
+**curl 示例**
+
+```bash
+curl "http://localhost:8080/stat?path=/test/hello.txt"
+```
+
+**说明**
+
+* 获取文件大小、类型、时间戳、副本策略等信息
+* 常用于文件管理、校验和可视化展示
+
+---
+
+> 💡 **提示**
+> 在生产环境中，建议将 SDK 的调用封装在自己的 Service 层中，
+> 而不是直接在 HTTP Handler 中调用，以提升可维护性和扩展性。
+
+
+## 📑文档参考
+- [SeaweedFS Wiki: Filer-Server-API](https://github.com/seaweedfs/seaweedfs/wiki/Filer-Server-API)
+
+## 🐺许可证
+本项目基于 [MIT License](LICENSE) 开源, 允许商业使用、修改、分发, 无需保留原作者版权声明。
