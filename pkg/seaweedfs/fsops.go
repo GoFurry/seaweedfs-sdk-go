@@ -20,17 +20,22 @@ import (
 
 // Mkdir creates a directory in SeaweedFS. 在 SeaweedFS 中创建目录.
 func (s *SeaweedFSService) Mkdir(ctx context.Context, dir string) error {
+	// NormalizePath ensures the path starts with "/" and removes redundant segments.
 	dir = util.NormalizePath(dir)
+	// SeaweedFS treats a directory as a path ending with "/".
 	if !strings.HasSuffix(dir, "/") {
 		dir += "/"
 	}
 
+	// SeaweedFS uses HTTP POST on the filer endpoint to create directories.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.FilerEndpoint+dir, nil)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Any 4xx or 5xx status code is treated as a failure.
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("mkdir failed: %s", resp.Status)
 	}
@@ -41,18 +46,22 @@ func (s *SeaweedFSService) Mkdir(ctx context.Context, dir string) error {
 // extra allows passing additional parameters compatible with SeaweedFS official API (e.g., recursive, skipChunkDeletion).
 // 删除文件或目录, extra 用于传递可选参数, 兼容官方 API (如 recursive, skipChunkDeletion)
 func (s *SeaweedFSService) Delete(ctx context.Context, p string, extra map[string]string) error {
+	// Normalize the path to avoid unexpected filer behavior.
 	p = util.NormalizePath(p)
 
+	// Build query parameters from extra options.
 	q := make(url.Values)
 	for k, v := range extra {
 		q.Set(k, v)
 	}
 
+	// Append query string only when parameters exist.
 	u := s.FilerEndpoint + p
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
 
+	// SeaweedFS uses HTTP DELETE for file and directory removal.
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
 	if err != nil {
 		return err
@@ -64,10 +73,12 @@ func (s *SeaweedFSService) Delete(ctx context.Context, p string, extra map[strin
 	}
 	defer resp.Body.Close()
 
+	// Any 2xx response is considered successful.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 
+	// Read response body to provide more diagnostic information.
 	b, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("delete failed: %s %s", resp.Status, b)
 }
@@ -82,6 +93,8 @@ func (s *SeaweedFSService) DeleteBatch(
 	ignoreErrors bool,
 	concurrency int,
 ) map[string]error {
+
+	// When concurrency <= 1, fall back to sequential execution.
 	if concurrency <= 1 {
 		results := make(map[string]error, len(paths))
 		for _, p := range paths {
@@ -97,6 +110,8 @@ func (s *SeaweedFSService) DeleteBatch(
 
 	results := make(map[string]error, len(paths))
 	mu := sync.Mutex{}
+
+	// Semaphore channel limits the number of concurrent delete operations.
 	sem := make(chan struct{}, concurrency)
 	wg := sync.WaitGroup{}
 
@@ -110,6 +125,8 @@ func (s *SeaweedFSService) DeleteBatch(
 			if ignoreErrors {
 				err = nil
 			}
+
+			// Protect shared map access.
 			mu.Lock()
 			results[path] = err
 			mu.Unlock()
@@ -122,13 +139,18 @@ func (s *SeaweedFSService) DeleteBatch(
 
 // Move renames or moves a file or directory to a new location. 重命名或移动文件/目录.
 func (s *SeaweedFSService) Move(ctx context.Context, from, to string) error {
+	// Normalize source path.
 	from = util.NormalizePath(from)
+	// If destination ends with "/", move into that directory.
 	if strings.HasSuffix(to, "/") {
 		base := path.Base(from)
 		to = path.Join(to, base)
 	}
+
+	// Clean destination path to remove ".." and ".".
 	to = path.Clean(to)
 
+	// SeaweedFS uses mv.from query parameter for move operations.
 	q := make(url.Values)
 	q.Set("mv.from", from)
 
@@ -148,13 +170,16 @@ func (s *SeaweedFSService) Move(ctx context.Context, from, to string) error {
 
 // Copy duplicates a file or directory to a new location. 复制文件或目录到新位置.
 func (s *SeaweedFSService) Copy(ctx context.Context, from, to string) error {
+	// Normalize source path.
 	from = util.NormalizePath(from)
+	// Preserve source base name when copying into a directory.
 	if strings.HasSuffix(to, "/") {
 		base := path.Base(from)
 		to = path.Join(to, base)
 	}
 	to = path.Clean(to)
 
+	// SeaweedFS uses cp.from query parameter for copy operations.
 	q := make(url.Values)
 	q.Set("cp.from", from)
 
@@ -184,18 +209,23 @@ func (s *SeaweedFSService) ListPaged(
 	extra map[string]string,
 ) (ListPagedResult, error) {
 
+	// SeaweedFS requires directory paths to end with "/".
 	if !strings.HasSuffix(dir, "/") {
 		dir += "/"
 	}
 
 	q := url.Values{}
 	q.Set("format", "json")
+
+	// lastFileName is used for cursor-based pagination.
 	if lastFileName != "" {
 		q.Set("lastFileName", lastFileName)
 	}
 	if limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
+
+	// Optional server-side name filtering.
 	if namePattern != "" {
 		q.Set("namePattern", namePattern)
 	}
@@ -221,6 +251,7 @@ func (s *SeaweedFSService) ListPaged(
 		return ListPagedResult{}, fmt.Errorf("list failed: %s %s", resp.Status, b)
 	}
 
+	// Decode SeaweedFS directory listing response.
 	var raw struct {
 		Path    string `json:"Path"`
 		Entries []struct {
@@ -240,6 +271,7 @@ func (s *SeaweedFSService) ListPaged(
 	var result []SeaweedEntry
 	for _, e := range raw.Entries {
 		result = append(result, SeaweedEntry{
+			// Use base name instead of full path for consumer-friendly output.
 			Name:  path.Base(strings.TrimRight(e.FullPath, "/")),
 			IsDir: e.Mode&uint32(os.ModeDir) != 0,
 			Size:  e.FileSize,
@@ -251,6 +283,7 @@ func (s *SeaweedFSService) ListPaged(
 	return ListPagedResult{
 		Entries: result,
 		Last:    raw.LastFileName,
+		// HasMore is inferred from page size and cursor advancement.
 		HasMore: raw.LastFileName != "" && len(result) == limit,
 	}, nil
 }
@@ -271,6 +304,7 @@ func (s *SeaweedFSService) List(
 	pageCount := 0
 
 	for {
+		// Allow caller to cancel long-running listings.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -288,6 +322,7 @@ func (s *SeaweedFSService) List(
 			break
 		}
 
+		// Prevent infinite pagination if the server does not advance cursor.
 		if page.Last == last {
 			return nil, fmt.Errorf("list aborted: lastFileName not advancing (possible infinite pagination)")
 		}
@@ -295,6 +330,7 @@ func (s *SeaweedFSService) List(
 		last = page.Last
 		pageCount++
 
+		// Enforce safety limit to avoid unbounded listings.
 		if pageCount >= s.policy.MaxListPages {
 			return nil, fmt.Errorf("list aborted: exceed max pages %d", s.policy.MaxListPages)
 		}

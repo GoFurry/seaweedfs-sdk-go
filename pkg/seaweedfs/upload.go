@@ -30,8 +30,10 @@ func (s *SeaweedFSService) UploadWithOptions(
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
 ) error {
 
+	// NormalizePath ensures path starts with "/" and has no duplicate slashes.
 	dst = util.NormalizePath(dst)
 
+	// Build request URL with optional query parameters.
 	u := s.FilerEndpoint + dst
 	if len(opts) > 0 {
 		q := url.Values{}
@@ -41,11 +43,13 @@ func (s *SeaweedFSService) UploadWithOptions(
 		u += "?" + q.Encode()
 	}
 
+	// Create HTTP request with context for cancellation.
 	req, err := http.NewRequestWithContext(ctx, string(method), u, r)
 	if err != nil {
 		return err
 	}
 
+	// Apply custom headers (e.g. Content-Type).
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -56,6 +60,7 @@ func (s *SeaweedFSService) UploadWithOptions(
 	}
 	defer resp.Body.Close()
 
+	// Any 4xx/5xx is considered a failure.
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("upload failed: %s %s", resp.Status, b)
@@ -80,16 +85,19 @@ func (s *SeaweedFSService) UploadLarge(
 
 	dst = util.NormalizePath(dst)
 
+	// Default chunk size is 10MB.
 	if chunkSize <= 0 {
-		chunkSize = 10 << 20 // 默认 10MB
+		chunkSize = 10 << 20
 	}
 
+	// Default retry configuration.
 	if largeOpt == nil {
 		largeOpt = &UploadLargeOptions{
 			MaxRetry: 3,
 		}
 	}
 
+	// Enforce global policy limits.
 	if largeOpt.MaxRetry > s.policy.UploadMaxRetry {
 		largeOpt.MaxRetry = s.policy.UploadMaxRetry
 	}
@@ -97,18 +105,23 @@ func (s *SeaweedFSService) UploadLarge(
 	var uploaded int64
 	buf := make([]byte, chunkSize)
 
+	// Main upload loop: upload until total size is reached.
 	for uploaded < size {
+
+		// Respect context cancellation
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
+		// Calculate current chunk size.
 		readSize := chunkSize
 		if size-uploaded < chunkSize {
 			readSize = size - uploaded
 		}
 
+		// Read exactly one chunk from reader.
 		n, err := io.ReadFull(r, buf[:readSize])
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			return err
@@ -119,6 +132,7 @@ func (s *SeaweedFSService) UploadLarge(
 
 		var lastErr error
 
+		// Retry loop for a single chunk.
 		for attempt := 0; attempt <= largeOpt.MaxRetry; attempt++ {
 			select {
 			case <-ctx.Done():
@@ -126,30 +140,46 @@ func (s *SeaweedFSService) UploadLarge(
 			default:
 			}
 
+			// bytes.Reader allows re-reading the same chunk on retry.
 			chunkReader := bytes.NewReader(buf[:n])
+
+			// Clone base options to avoid mutation.
 			chunkOpts := make(map[string]string)
 			for k, v := range opts {
 				chunkOpts[k] = v
 			}
 
+			// Choose upload strategy:
+			//
+			// UseOffset = true:
+			//   - Use explicit offset
+			//   - Suitable for resumable uploads
+			//
+			// UseOffset = false:
+			//   - First chunk normal upload
+			//   - Subsequent chunks use ?op=append
+			//
 			if largeOpt.UseOffset {
 				chunkOpts["offset"] = strconv.FormatInt(uploaded, 10)
 			} else if uploaded > 0 {
 				chunkOpts["op"] = "append"
 			}
 
+			// Upload this chunk.
 			err = s.UploadWithOptions(ctx, method, dst, chunkReader, chunkOpts, headers)
 			if err == nil {
 				lastErr = nil
 				break
 			}
 
+			// If error is not retryable, fail immediately.
 			if !policy.ShouldRetryUpload(err) {
 				return fmt.Errorf("upload chunk failed (no retry) at offset=%d: %w", uploaded, err)
 			}
 
 			lastErr = err
 
+			// Exponential backoff with jitter.
 			sleep := s.policy.BackoffBase * (1 << attempt)
 			if sleep > s.policy.BackoffMax {
 				sleep = s.policy.BackoffMax
@@ -163,6 +193,7 @@ func (s *SeaweedFSService) UploadLarge(
 			}
 		}
 
+		// All retries exhausted.
 		if lastErr != nil {
 			return fmt.Errorf("upload chunk failed at offset=%d after %d retries: %w",
 				uploaded, largeOpt.MaxRetry, lastErr)
@@ -193,6 +224,7 @@ func (s *SeaweedFSService) UploadFileSmart(
 	}
 	defer file.Close()
 
+	// Auto-detect Content-Type if missing.
 	contentType := fh.Header.Get("Content-Type")
 	if contentType == "" {
 		buf := make([]byte, 512)
@@ -205,6 +237,7 @@ func (s *SeaweedFSService) UploadFileSmart(
 	}
 	headers["Content-Type"] = contentType
 
+	// Choose upload strategy based on file size.
 	if fh.Size <= largeThreshold {
 		return s.UploadWithOptions(ctx, method, dst, file, opts, headers)
 	} else {

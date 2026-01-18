@@ -22,10 +22,12 @@ import (
 // includeTags indicates whether to also fetch custom tags for the entry.
 // 获取文件或目录的元数据, includeTags 表示是否同时获取自定义标签.
 func (s *SeaweedFSService) Stat(ctx context.Context, p string, includeTags bool) (*SeaweedStat, error) {
+	// SeaweedFS filer expects absolute paths.
 	if !path.IsAbs(p) {
 		p = "/" + p
 	}
 
+	// metadata=true tells SeaweedFS to return full stat information instead of file content.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.FilerEndpoint+p+"?metadata=true", nil)
 	if err != nil {
 		return nil, err
@@ -38,14 +40,17 @@ func (s *SeaweedFSService) Stat(ctx context.Context, p string, includeTags bool)
 	}
 	defer resp.Body.Close()
 
+	// 404 is mapped to os.ErrNotExist for Go-style error handling.
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, os.ErrNotExist
 	}
+	// Any other 4xx or 5xx response is treated as a hard failure.
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("stat failed: %s %s", resp.Status, string(body))
 	}
 
+	// Raw response structure mirrors SeaweedFS metadata JSON format.
 	var raw struct {
 		FullPath    string  `json:"FullPath"`
 		Mtime       string  `json:"Mtime"`
@@ -63,13 +68,16 @@ func (s *SeaweedFSService) Stat(ctx context.Context, p string, includeTags bool)
 		return nil, err
 	}
 
+	// Convert SeaweedFS raw metadata into SDK-friendly SeaweedStat.
 	stat := &SeaweedStat{
-		Path:        raw.FullPath,
-		Name:        path.Base(raw.FullPath),
-		IsDir:       raw.Mode&uint32(os.ModeDir) != 0,
-		Size:        raw.FileSize,
-		Mime:        raw.Mime,
-		Md5:         util.DerefString(raw.Md5),
+		Path:  raw.FullPath,
+		Name:  path.Base(raw.FullPath),
+		IsDir: raw.Mode&uint32(os.ModeDir) != 0,
+		Size:  raw.FileSize,
+		Mime:  raw.Mime,
+		// Md5 may be null for directories or certain files.
+		Md5: util.DerefString(raw.Md5),
+		// SeaweedFS uses RFC3339 time strings.
 		Mtime:       util.ParseSeaweedTime(raw.Mtime),
 		Crtime:      util.ParseSeaweedTime(raw.Crtime),
 		Mode:        raw.Mode,
@@ -78,9 +86,11 @@ func (s *SeaweedFSService) Stat(ctx context.Context, p string, includeTags bool)
 		TtlSec:      raw.TtlSec,
 	}
 
+	// Fetch tags separately because SeaweedFS exposes tags via HTTP headers.
 	if includeTags {
 		tags, err := s.GetTags(ctx, raw.FullPath)
 		if err != nil {
+			// Tag fetching errors are intentionally ignored to avoid breaking stat.
 			tags = nil
 		}
 		stat.Tags = tags
@@ -94,13 +104,19 @@ func (s *SeaweedFSService) Stat(ctx context.Context, p string, includeTags bool)
 // ignoreErrors indicates whether to skip errors and continue processing.
 // 批量获取文件或目录元数据, concurrency 指定并发数, ignoreErrors 表示是否忽略错误.
 func (s *SeaweedFSService) StatBatch(ctx context.Context, paths []string, concurrency int, ignoreErrors bool, includeTags bool) (map[string]*SeaweedStat, error) {
+
+	// Apply a sane default when concurrency is not specified.
 	if concurrency <= 0 {
 		concurrency = 10
 	}
 
 	result := make(map[string]*SeaweedStat, len(paths))
 	mu := sync.Mutex{}
+
+	// errgroup allows early cancellation when a fatal error occurs.
 	g, ctx := errgroup.WithContext(ctx)
+
+	// Semaphore limits the number of in-flight Stat requests.
 	sem := make(chan struct{}, concurrency)
 
 	for _, p := range paths {
@@ -125,6 +141,7 @@ func (s *SeaweedFSService) StatBatch(ctx context.Context, paths []string, concur
 				return err
 			}
 
+			// Protect shared result map
 			mu.Lock()
 			if err != nil && ignoreErrors {
 				result[p] = nil
@@ -145,6 +162,7 @@ func (s *SeaweedFSService) StatBatch(ctx context.Context, paths []string, concur
 
 // Exists checks whether a file or directory exists. 检查文件或目录是否存在.
 func (s *SeaweedFSService) Exists(ctx context.Context, p string) (bool, error) {
+	// Exists is implemented on top of Stat for consistency.
 	_, err := s.Stat(ctx, p, false)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -173,6 +191,7 @@ func (s *SeaweedFSService) ExistsBatch(ctx context.Context, paths []string, conc
 		p := p
 		select {
 		case <-ctx.Done():
+			// On cancellation, mark remaining entries as non-existent.
 			mu.Lock()
 			result[p] = false
 			mu.Unlock()
@@ -220,10 +239,13 @@ func (s *SeaweedFSService) ExistsBatch(ctx context.Context, paths []string, conc
 // SetTags sets custom tags on a file or directory. 为文件或目录设置自定义标签.
 func (s *SeaweedFSService) SetTags(ctx context.Context, path string, tags FileTags) error {
 	path = util.NormalizePath(path)
+
+	// No-op when tags is empty to avoid unnecessary requests.
 	if len(tags) == 0 {
 		return nil
 	}
 
+	// SeaweedFS uses PUT ?tagging and custom headers for tag assignment.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.FilerEndpoint+path+"?tagging", nil)
 	if err != nil {
 		return err
@@ -249,6 +271,8 @@ func (s *SeaweedFSService) SetTags(ctx context.Context, path string, tags FileTa
 // GetTags retrieves custom tags of a file or directory. 获取文件或目录的自定义标签.
 func (s *SeaweedFSService) GetTags(ctx context.Context, path string) (FileTags, error) {
 	path = util.NormalizePath(path)
+
+	// SeaweedFS exposes tags via response headers on HEAD requests.
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.FilerEndpoint+path, nil)
 	if err != nil {
 		return nil, err
@@ -270,6 +294,7 @@ func (s *SeaweedFSService) GetTags(ctx context.Context, path string) (FileTags, 
 
 	tags := make(FileTags)
 	for k, vals := range resp.Header {
+		// Only headers with "Seaweed-" prefix are treated as tags.
 		if strings.HasPrefix(k, "Seaweed-") && len(vals) > 0 {
 			tags[strings.TrimPrefix(k, "Seaweed-")] = vals[0]
 		}
@@ -282,6 +307,8 @@ func (s *SeaweedFSService) GetTags(ctx context.Context, path string) (FileTags, 
 // 删除文件或目录的自定义标签, 如果 keys 为空则删除所有 Seaweed- 前缀标签.
 func (s *SeaweedFSService) DeleteTags(ctx context.Context, path string, keys ...string) error {
 	path = util.NormalizePath(path)
+
+	// Without keys, SeaweedFS deletes all tags.
 	u := s.FilerEndpoint + path + "?tagging"
 	if len(keys) > 0 {
 		u += "=" + strings.Join(keys, ",")

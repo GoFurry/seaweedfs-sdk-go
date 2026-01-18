@@ -17,6 +17,7 @@ import (
 
 // Download downloads a file from SeaweedFS with the default options. 使用默认选项从 SeaweedFS 下载文件.
 func (s *SeaweedFSService) Download(ctx context.Context, p string) (io.ReadCloser, http.Header, error) {
+	// Delegate to DownloadWithOptions without query or headers
 	rc, header, _, err := s.DownloadWithOptions(ctx, p, nil, nil)
 	return rc, header, err
 }
@@ -29,10 +30,12 @@ func (s *SeaweedFSService) DownloadWithOptions(
 	headers map[string]string,
 ) (io.ReadCloser, http.Header, int, error) {
 
+	// Normalize path to ensure it starts with '/' and is clean
 	p = util.NormalizePath(p)
 
 	u := s.FilerEndpoint + p
 	if len(query) > 0 {
+		// Build query string
 		q := url.Values{}
 		for k, v := range query {
 			q.Set(k, v)
@@ -40,25 +43,30 @@ func (s *SeaweedFSService) DownloadWithOptions(
 		u += "?" + q.Encode()
 	}
 
+	// Create HTTP GET request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
+	// Apply custom headers
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
+	// Execute request
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
+	// Translate 404 to os.ErrNotExist for Go-style handling
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
 		return nil, nil, resp.StatusCode, os.ErrNotExist
 	}
 
+	// Any other >=400 status is treated as error
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -66,6 +74,7 @@ func (s *SeaweedFSService) DownloadWithOptions(
 			fmt.Errorf("download failed: %s %s", resp.Status, string(b))
 	}
 
+	// Caller is responsible for closing the response body
 	return resp.Body, resp.Header, resp.StatusCode, nil
 }
 
@@ -76,6 +85,7 @@ func (s *SeaweedFSService) DownloadRange(
 	start, end int64,
 ) (io.ReadCloser, http.Header, int, error) {
 
+	// Validate range start and end
 	if start < 0 {
 		return nil, nil, 0, fmt.Errorf("invalid range start")
 	}
@@ -83,22 +93,24 @@ func (s *SeaweedFSService) DownloadRange(
 		return nil, nil, 0, fmt.Errorf("invalid range: end < start")
 	}
 
+	// Build HTTP Range header value
 	rangeValue := ""
 	if end >= 0 {
 		rangeValue = fmt.Sprintf("bytes=%d-%d", start, end)
 	} else {
 		rangeValue = fmt.Sprintf("bytes=%d-", start)
 	}
-
 	headers := map[string]string{
 		"Range": rangeValue,
 	}
 
+	// Perform ranged download
 	rc, hdr, status, err := s.DownloadWithOptions(ctx, p, nil, headers)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
+	// SeaweedFS may downgrade to 200 instead of 206
 	if status != http.StatusPartialContent && status != http.StatusOK {
 		rc.Close()
 		return nil, nil, status, fmt.Errorf("unexpected status code: %d", status)
@@ -114,6 +126,7 @@ func (s *SeaweedFSService) DownloadResume(
 	offset int64,
 ) (io.ReadCloser, http.Header, int, error) {
 
+	// Offset <= 0 means full download
 	if offset <= 0 {
 		return s.DownloadWithOptions(ctx, p, nil, nil)
 	}
@@ -140,10 +153,12 @@ func (s *SeaweedFSService) DownloadConcurrent(
 ) map[string]error {
 	result := make(map[string]error)
 
+	// Enforce maximum allowed concurrent chunks
 	if chunkCount > s.policy.MaxDownloadChunks {
 		chunkCount = s.policy.MaxDownloadChunks
 	}
 
+	// Fetch remote file metadata to get size
 	stat, err := s.Stat(ctx, remotePath, false)
 	if err != nil {
 		result[dstPath] = fmt.Errorf("stat failed: %w", err)
@@ -151,6 +166,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 	}
 	size := stat.Size
 
+	// Fallback to sequential download for small files
 	if chunkCount <= 1 || size < int64(chunkCount*5<<20) {
 		select {
 		case <-ctx.Done():
@@ -178,6 +194,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 		return result
 	}
 
+	// Calculate chunk size
 	chunkSize := size / int64(chunkCount)
 	tempFiles := make([]string, chunkCount)
 	errs := make(chan DownloadChunkError, chunkCount)
@@ -207,6 +224,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 		go func(start, end int64, tmp string) {
 			defer wg.Done()
 
+			// Abort early if context is cancelled
 			select {
 			case <-ctx.Done():
 				errs <- DownloadChunkError{File: tmp, Err: ctx.Err()}
@@ -214,6 +232,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 			default:
 			}
 
+			// Download chunk range
 			rc, _, _, err := s.DownloadRange(ctx, remotePath, start, end)
 			if err != nil {
 				errs <- DownloadChunkError{File: tmp, Err: err}
@@ -221,6 +240,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 			}
 			defer rc.Close()
 
+			// Write chunk to temp file
 			select {
 			case <-ctx.Done():
 				errs <- DownloadChunkError{File: tmp, Err: ctx.Err()}
@@ -243,6 +263,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 	wg.Wait()
 	close(errs)
 
+	// Collect all chunk results
 	for e := range errs {
 		result[e.File] = e.Err
 	}
