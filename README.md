@@ -166,28 +166,29 @@ Each example includes both the Gin handler implementation and the corresponding 
 
 ```go
 r.POST("/upload", func(c *gin.Context) {
+    path := c.Query("path")
     file, err := c.FormFile("file")
     if err != nil {
         c.JSON(400, gin.H{"error": err.Error()})
         return
     }
-
-    dstPath := c.Query("path")
-
-    src, err := file.Open()
+    
+    opts := map[string]string{
+        //"ttl": "1d",
+        //"op":  "append",
+    }
+    
+    headers := map[string]string{
+        //"Seaweed-Tag": "avatar",
+    }
+    
+    // 统一小文件上传
+    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers)
     if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
+        c.JSON(200, gin.H{"error": err})
         return
     }
-    defer src.Close()
-
-    err = seaweed.UploadAuto(c.Request.Context(), dstPath, src, file.Size)
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
-    }
-
-    c.JSON(200, gin.H{"message": "upload success"})
+    c.JSON(200, gin.H{"msg": "upload success")
 })
 ```
 
@@ -211,34 +212,25 @@ curl -X POST "http://localhost:8080/upload?path=/test/hello.txt" \
 
 ```go
 r.POST("/upload_large", func(c *gin.Context) {
+    path := c.Query("path")
     file, err := c.FormFile("file")
     if err != nil {
         c.JSON(400, gin.H{"error": err.Error()})
         return
     }
-
-    dstPath := c.Query("path")
-
-    src, err := file.Open()
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
+    
+    opts := map[string]string{
+        
     }
-    defer src.Close()
-
-    err = seaweed.UploadLarge(
-        c.Request.Context(),
-        dstPath,
-        src,
-        file.Size,
-        nil,
-    )
+    
+    headers := map[string]string{}
+	
+    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers)
     if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
-        return
+        c.JSON(200, gin.H{"error": err})
+		return
     }
-
-    c.JSON(200, gin.H{"message": "large upload success"})
+    c.JSON(200, gin.H{"msg": "large upload success")
 })
 ```
 
@@ -262,32 +254,34 @@ curl -X POST "http://localhost:8080/upload_large?path=/test/big.zip" \
 
 ```go
 r.GET("/download", func(c *gin.Context) {
-    filePath := c.Query("path")
-
-    reader, headers, err := seaweed.Download(
-        c.Request.Context(),
-        filePath,
-        nil,
-    )
-    if err != nil {
-        c.JSON(500, gin.H{"error": err.Error()})
+    path := c.Query("path")
+    if path == "" {
+        c.JSON(400, gin.H{"error": "path required"})
         return
     }
-    defer reader.Close()
-
-    for k, v := range headers {
-        c.Header(k, v)
+    
+    rc, header, err := fs.Download(c, path)
+    if err != nil {
+        c.JSON(404, gin.H{"error": err.Error()})
+        return
     }
-
+    defer rc.Close()
+    
+    for k, v := range header {
+        if len(v) > 0 {
+            c.Header(k, v[0])
+        }
+    }
+    
     c.Status(200)
-    _, _ = io.Copy(c.Writer, reader)
+    _, _ = io.Copy(c.Writer, rc)
 })
 ```
 
 **curl**
 
 ```bash
-curl -L "http://localhost:8080/download?path=/test/hello.txt" -o hello.txt
+curl "http://localhost:8080/download?path=/test/hello.txt" -o hello.txt
 ```
 
 **Description**
@@ -303,15 +297,13 @@ curl -L "http://localhost:8080/download?path=/test/hello.txt" -o hello.txt
 
 ```go
 r.GET("/stat", func(c *gin.Context) {
-    filePath := c.Query("path")
-
-    stat, err := seaweed.Stat(c.Request.Context(), filePath)
+    path := c.Query("path")
+    stat, err := fs.Stat(context.Background(), path, false)
     if err != nil {
-        c.JSON(404, gin.H{"error": err.Error()})
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
-
-    c.JSON(200, stat)
+    c.JSON(http.StatusOK, stat)
 })
 ```
 
