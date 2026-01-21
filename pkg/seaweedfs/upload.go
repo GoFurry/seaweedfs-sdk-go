@@ -29,6 +29,7 @@ func (s *SeaweedFSService) UploadWithOptions(
 	r io.Reader, // Source reader / 数据源
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	// NormalizePath ensures path starts with "/" and has no duplicate slashes.
@@ -67,6 +68,11 @@ func (s *SeaweedFSService) UploadWithOptions(
 		return fmt.Errorf("upload failed: %s %s", resp.Status, b)
 	}
 
+	// Callback when finished.
+	if progress != nil {
+		progress(-1, -1)
+	}
+
 	return nil
 }
 
@@ -82,6 +88,7 @@ func (s *SeaweedFSService) UploadLarge(
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
 	largeOpt *UploadLargeOptions, // Options for large upload / 大文件上传选项
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	dst = util.NormalizePath(dst)
@@ -167,7 +174,7 @@ func (s *SeaweedFSService) UploadLarge(
 			}
 
 			// Upload this chunk.
-			err = s.UploadWithOptions(ctx, method, dst, chunkReader, chunkOpts, headers)
+			err = s.UploadWithOptions(ctx, method, dst, chunkReader, chunkOpts, headers, progress)
 			if err == nil {
 				lastErr = nil
 				break
@@ -201,6 +208,11 @@ func (s *SeaweedFSService) UploadLarge(
 		}
 
 		uploaded += int64(n)
+
+		// Callback when finished.
+		if progress != nil {
+			progress(uploaded, size)
+		}
 	}
 
 	return nil
@@ -217,6 +229,7 @@ func (s *SeaweedFSService) UploadFileSmart(
 	chunkSize int64, // Chunk size / 分片大小
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	file, err := fh.Open()
@@ -240,13 +253,15 @@ func (s *SeaweedFSService) UploadFileSmart(
 
 	// Choose upload strategy based on file size.
 	if fh.Size <= largeThreshold {
-		return s.UploadWithOptions(ctx, method, dst, file, opts, headers)
+		return s.UploadWithOptions(ctx, method, dst, file, opts, headers, progress)
 	} else {
 		return s.UploadLarge(ctx, method, dst, file, fh.Size, chunkSize, opts, headers,
 			&UploadLargeOptions{
 				MaxRetry:  3,
 				UseOffset: true,
-			})
+			},
+			progress,
+		)
 	}
 }
 
@@ -263,6 +278,7 @@ func (s *SeaweedFSService) UploadReaderSmart(
 	chunkSize int64, // Chunk size / 分片大小
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	dst = util.NormalizePath(dst)
@@ -273,22 +289,16 @@ func (s *SeaweedFSService) UploadReaderSmart(
 
 	// Choose upload strategy based on size / 根据大小选择上传策略
 	if size <= largeThreshold {
-		return s.UploadWithOptions(ctx, method, dst, r, opts, headers)
+		return s.UploadWithOptions(ctx, method, dst, r, opts, headers, progress)
 	}
 
 	return s.UploadLarge(
-		ctx,
-		method,
-		dst,
-		r,
-		size,
-		chunkSize,
-		opts,
-		headers,
+		ctx, method, dst, r, size, chunkSize, opts, headers,
 		&UploadLargeOptions{
 			MaxRetry:  3,
 			UseOffset: true,
 		},
+		progress,
 	)
 }
 
@@ -303,6 +313,7 @@ func (s *SeaweedFSService) UploadLocalFile(
 	chunkSize int64, // Chunk size / 分片大小
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	file, err := os.Open(localPath)
@@ -328,14 +339,6 @@ func (s *SeaweedFSService) UploadLocalFile(
 	}
 
 	return s.UploadReaderSmart(
-		ctx,
-		method,
-		dst,
-		file,
-		stat.Size(),
-		largeThreshold,
-		chunkSize,
-		opts,
-		headers,
+		ctx, method, dst, file, stat.Size(), largeThreshold, chunkSize, opts, headers, progress,
 	)
 }

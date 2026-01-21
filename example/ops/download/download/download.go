@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	rc, _, err := example.Fs.Download(example.Ctx, "/test/test.jpg")
+	rc, _, err := example.Fs.Download(example.Ctx, "/test/test.jpg", nil)
 	example.Must(err)
 	defer rc.Close()
 

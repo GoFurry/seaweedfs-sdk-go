@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	rc, _, _, err := example.Fs.DownloadRange(example.Ctx, "/test/test.jpg", 0, 1024*1024)
+	rc, _, _, err := example.Fs.DownloadRange(example.Ctx, "/test/test.jpg", 0, 1024*1024, nil)
 	example.Must(err)
 	defer rc.Close()
 

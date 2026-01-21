@@ -15,6 +15,7 @@ func main() {
 		10<<20, // 10MB chunk
 		nil,
 		nil,
+		nil,
 	)
 	example.Must(err)
 }

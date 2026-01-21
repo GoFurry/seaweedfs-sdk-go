@@ -52,3 +52,7 @@ type DirUsage struct {
 	FileCount int64 // File count number / 文件数量
 	DirCount  int64 // Directory count number / 目录数量
 }
+
+// ProgressFunc used as callback for upload or download
+// 上传/下载通用进度回调
+type ProgressFunc func(done int64, total int64)
