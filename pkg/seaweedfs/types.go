@@ -48,7 +48,7 @@ type ListPagedResult struct {
 // DirUsage represents a file or directory Usage
 // 表示文件或目录的使用情况
 type DirUsage struct {
-	TotalSize int64 // 总大小
-	FileCount int64 // 文件数量
-	DirCount  int64 // 目录数量
+	TotalSize int64 // Total bytes / 总大小
+	FileCount int64 // File count number / 文件数量
+	DirCount  int64 // Directory count number / 目录数量
 }
