@@ -183,7 +183,7 @@ r.POST("/upload", func(c *gin.Context) {
     }
     
     // 统一小文件上传
-    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers)
+    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers, nil)
     if err != nil {
         c.JSON(200, gin.H{"error": err})
         return
@@ -225,7 +225,7 @@ r.POST("/upload_large", func(c *gin.Context) {
     
     headers := map[string]string{}
     
-    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers)
+    err = fs.UploadFileSmart(c, storage.UploadMethodPut, path, file, 20<<20, 10<<20, opts, headers, nil)
     if err != nil {
         c.JSON(200, gin.H{"error": err})
         return
@@ -260,7 +260,7 @@ r.GET("/download", func(c *gin.Context) {
         return
     }
     
-    rc, header, err := fs.Download(c, path)
+    rc, header, err := fs.Download(c, path, nil)
     if err != nil {
         c.JSON(404, gin.H{"error": err.Error()})
         return
