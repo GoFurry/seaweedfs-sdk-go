@@ -4,6 +4,7 @@ package seaweedfs
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,37 @@ import (
 // ==========================
 // 文件操作 / File Utilities
 // ==========================
+
+// MergeFiles merges multiple files in order into a target file.
+// If cleanup is true, source files will be deleted after merging.
+// 将多个文件按顺序合并到目标文件, cleanup 为 true 时删除源分片.
+func MergeFiles(outputPath string, parts []string, cleanup bool) error {
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	for _, p := range parts {
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, in)
+		in.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	if cleanup {
+		for _, p := range parts {
+			_ = os.Remove(p)
+		}
+	}
+
+	return nil
+}
 
 // LocalFileSize returns the size of a local file in bytes.
 // Returns an error if the file does not exist or is not a regular file.
