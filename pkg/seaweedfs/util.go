@@ -3,6 +3,10 @@
 package seaweedfs
 
 import (
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -132,6 +136,92 @@ func ReadableSize(size int64) string {
 	}
 	pre := []string{"KB", "MB", "GB", "TB", "PB"}[exp]
 	return fmt.Sprintf("%.2f%s", float64(size)/float64(div), pre)
+}
+
+// ==========================
+// 文件完整性验证 / File Integrity Utilities
+// ==========================
+
+// MD5File calculates the MD5 hash of a local file.
+// 返回文件的 MD5 字符串, 用于完整性校验
+func MD5File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := md5.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// SHA1File calculates the SHA1 hash of a local file.
+// 返回文件的 SHA1 字符串
+func SHA1File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha1.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// SHA256File calculates the SHA256 hash of a local file.
+// 返回文件的 SHA256 字符串
+func SHA256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// VerifyFileSize verifies that the file has the expected size.
+// 校验文件大小是否与预期一致
+func VerifyFileSize(path string, expected int64) (bool, error) {
+	size, err := LocalFileSize(path)
+	if err != nil {
+		return false, err
+	}
+	return size == expected, nil
+}
+
+// VerifyFileMD5 verifies that the file's MD5 matches the expected value.
+// 校验文件 MD5 是否与预期一致
+func VerifyFileMD5(path, expectedMD5 string) (bool, error) {
+	md5sum, err := MD5File(path)
+	if err != nil {
+		return false, err
+	}
+	return md5sum == expectedMD5, nil
+}
+
+// MD5Chunk computes the MD5 of a byte slice (a chunk).
+// 分片校验, 返回 MD5 字符串
+func MD5Chunk(data []byte) string {
+	h := md5.New()
+	h.Write(data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// VerifyChunkMD5 verifies a chunk's MD5 matches expected value.
+// 校验分片内容
+func VerifyChunkMD5(data []byte, expected string) bool {
+	return MD5Chunk(data) == expected
 }
 
 // ==========================
