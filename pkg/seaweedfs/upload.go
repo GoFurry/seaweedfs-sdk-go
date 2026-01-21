@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -28,6 +29,7 @@ func (s *SeaweedFSService) UploadWithOptions(
 	r io.Reader, // Source reader / 数据源
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	// NormalizePath ensures path starts with "/" and has no duplicate slashes.
@@ -66,6 +68,11 @@ func (s *SeaweedFSService) UploadWithOptions(
 		return fmt.Errorf("upload failed: %s %s", resp.Status, b)
 	}
 
+	// Callback when finished.
+	if progress != nil {
+		progress(-1, -1)
+	}
+
 	return nil
 }
 
@@ -81,6 +88,7 @@ func (s *SeaweedFSService) UploadLarge(
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
 	largeOpt *UploadLargeOptions, // Options for large upload / 大文件上传选项
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	dst = util.NormalizePath(dst)
@@ -166,7 +174,7 @@ func (s *SeaweedFSService) UploadLarge(
 			}
 
 			// Upload this chunk.
-			err = s.UploadWithOptions(ctx, method, dst, chunkReader, chunkOpts, headers)
+			err = s.UploadWithOptions(ctx, method, dst, chunkReader, chunkOpts, headers, progress)
 			if err == nil {
 				lastErr = nil
 				break
@@ -200,6 +208,11 @@ func (s *SeaweedFSService) UploadLarge(
 		}
 
 		uploaded += int64(n)
+
+		// Callback when finished.
+		if progress != nil {
+			progress(uploaded, size)
+		}
 	}
 
 	return nil
@@ -216,6 +229,7 @@ func (s *SeaweedFSService) UploadFileSmart(
 	chunkSize int64, // Chunk size / 分片大小
 	opts map[string]string, // Optional query parameters / 可选查询参数
 	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
 ) error {
 
 	file, err := fh.Open()
@@ -239,12 +253,92 @@ func (s *SeaweedFSService) UploadFileSmart(
 
 	// Choose upload strategy based on file size.
 	if fh.Size <= largeThreshold {
-		return s.UploadWithOptions(ctx, method, dst, file, opts, headers)
+		return s.UploadWithOptions(ctx, method, dst, file, opts, headers, progress)
 	} else {
 		return s.UploadLarge(ctx, method, dst, file, fh.Size, chunkSize, opts, headers,
 			&UploadLargeOptions{
 				MaxRetry:  3,
 				UseOffset: true,
-			})
+			},
+			progress,
+		)
 	}
+}
+
+// UploadReaderSmart uploads data from an io.Reader intelligently.
+// It chooses normal upload or large upload based on size.
+// 智能上传 Reader 数据, 根据大小选择普通或分片上传.
+func (s *SeaweedFSService) UploadReaderSmart(
+	ctx context.Context,
+	method UploadMethod, // HTTP method / HTTP 方法
+	dst string, // Destination path / 目标路径
+	r io.Reader, // Source reader / 数据源
+	size int64, // Total size / 数据总大小
+	largeThreshold int64, // Threshold for large upload / 大文件阈值
+	chunkSize int64, // Chunk size / 分片大小
+	opts map[string]string, // Optional query parameters / 可选查询参数
+	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
+) error {
+
+	dst = util.NormalizePath(dst)
+
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+
+	// Choose upload strategy based on size / 根据大小选择上传策略
+	if size <= largeThreshold {
+		return s.UploadWithOptions(ctx, method, dst, r, opts, headers, progress)
+	}
+
+	return s.UploadLarge(
+		ctx, method, dst, r, size, chunkSize, opts, headers,
+		&UploadLargeOptions{
+			MaxRetry:  3,
+			UseOffset: true,
+		},
+		progress,
+	)
+}
+
+// UploadLocalFile uploads a local file from filesystem.
+// 从本地文件系统上传文件.
+func (s *SeaweedFSService) UploadLocalFile(
+	ctx context.Context,
+	method UploadMethod, // HTTP method / HTTP 方法
+	dst string, // Destination path / 目标路径
+	localPath string, // Local file path / 本地文件路径
+	largeThreshold int64, // Threshold for large upload / 大文件阈值
+	chunkSize int64, // Chunk size / 分片大小
+	opts map[string]string, // Optional query parameters / 可选查询参数
+	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+	progress ProgressFunc, // Callback for progress / 进度回调
+) error {
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Auto-detect Content-Type if missing / 自动嗅探Content-Type
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	if _, ok := headers["Content-Type"]; !ok {
+		buf := make([]byte, 512)
+		n, _ := file.Read(buf)
+		headers["Content-Type"] = http.DetectContentType(buf[:n])
+		file.Seek(0, io.SeekStart)
+	}
+
+	return s.UploadReaderSmart(
+		ctx, method, dst, file, stat.Size(), largeThreshold, chunkSize, opts, headers, progress,
+	)
 }

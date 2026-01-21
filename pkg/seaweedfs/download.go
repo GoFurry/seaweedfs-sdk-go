@@ -16,9 +16,9 @@ import (
 )
 
 // Download downloads a file from SeaweedFS with the default options. 使用默认选项从 SeaweedFS 下载文件.
-func (s *SeaweedFSService) Download(ctx context.Context, p string) (io.ReadCloser, http.Header, error) {
+func (s *SeaweedFSService) Download(ctx context.Context, p string, progress ProgressFunc) (io.ReadCloser, http.Header, error) {
 	// Delegate to DownloadWithOptions without query or headers
-	rc, header, _, err := s.DownloadWithOptions(ctx, p, nil, nil)
+	rc, header, _, err := s.DownloadWithOptions(ctx, p, nil, nil, progress)
 	return rc, header, err
 }
 
@@ -28,6 +28,7 @@ func (s *SeaweedFSService) DownloadWithOptions(
 	p string,
 	query map[string]string,
 	headers map[string]string,
+	progress ProgressFunc,
 ) (io.ReadCloser, http.Header, int, error) {
 
 	// Normalize path to ensure it starts with '/' and is clean
@@ -74,6 +75,11 @@ func (s *SeaweedFSService) DownloadWithOptions(
 			fmt.Errorf("download failed: %s %s", resp.Status, string(b))
 	}
 
+	// Callback when finished
+	if progress != nil {
+		progress(-1, -1)
+	}
+
 	// Caller is responsible for closing the response body
 	return resp.Body, resp.Header, resp.StatusCode, nil
 }
@@ -83,6 +89,7 @@ func (s *SeaweedFSService) DownloadRange(
 	ctx context.Context,
 	p string,
 	start, end int64,
+	progress ProgressFunc,
 ) (io.ReadCloser, http.Header, int, error) {
 
 	// Validate range start and end
@@ -105,7 +112,7 @@ func (s *SeaweedFSService) DownloadRange(
 	}
 
 	// Perform ranged download
-	rc, hdr, status, err := s.DownloadWithOptions(ctx, p, nil, headers)
+	rc, hdr, status, err := s.DownloadWithOptions(ctx, p, nil, headers, progress)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -124,14 +131,15 @@ func (s *SeaweedFSService) DownloadResume(
 	ctx context.Context,
 	p string,
 	offset int64,
+	progress ProgressFunc,
 ) (io.ReadCloser, http.Header, int, error) {
 
 	// Offset <= 0 means full download
 	if offset <= 0 {
-		return s.DownloadWithOptions(ctx, p, nil, nil)
+		return s.DownloadWithOptions(ctx, p, nil, nil, progress)
 	}
 
-	return s.DownloadRange(ctx, p, offset, -1)
+	return s.DownloadRange(ctx, p, offset, -1, progress)
 }
 
 // DownloadChunkError represents an error for a specific chunk during concurrent download. 表示并发下载中某个分块的错误.
@@ -150,6 +158,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 	ctx context.Context,
 	remotePath, dstPath string,
 	chunkCount int,
+	progress ProgressFunc,
 ) map[string]error {
 	result := make(map[string]error)
 
@@ -175,7 +184,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 		default:
 		}
 
-		rc, _, _, err := s.DownloadResume(ctx, remotePath, 0)
+		rc, _, _, err := s.DownloadResume(ctx, remotePath, 0, progress)
 		if err != nil {
 			result[dstPath] = err
 			return result
@@ -199,6 +208,10 @@ func (s *SeaweedFSService) DownloadConcurrent(
 	tempFiles := make([]string, chunkCount)
 	errs := make(chan DownloadChunkError, chunkCount)
 	wg := sync.WaitGroup{}
+
+	// Mutex for callback
+	var totalDownloaded int64
+	var mu sync.Mutex
 
 	for i := 0; i < chunkCount; i++ {
 		select {
@@ -233,7 +246,7 @@ func (s *SeaweedFSService) DownloadConcurrent(
 			}
 
 			// Download chunk range
-			rc, _, _, err := s.DownloadRange(ctx, remotePath, start, end)
+			rc, _, _, err := s.DownloadRange(ctx, remotePath, start, end, nil)
 			if err != nil {
 				errs <- DownloadChunkError{File: tmp, Err: err}
 				return
@@ -255,7 +268,15 @@ func (s *SeaweedFSService) DownloadConcurrent(
 			}
 			defer f.Close()
 
-			_, err = io.Copy(f, rc)
+			// Write and update progress
+			n, err := io.Copy(f, rc)
+			mu.Lock()
+			totalDownloaded += n
+			if progress != nil {
+				progress(totalDownloaded, size)
+			}
+			mu.Unlock()
+
 			errs <- DownloadChunkError{File: tmp, Err: err}
 		}(start, end, tmp)
 	}
@@ -269,35 +290,4 @@ func (s *SeaweedFSService) DownloadConcurrent(
 	}
 
 	return result
-}
-
-// MergeFiles merges multiple files in order into a target file.
-// If cleanup is true, source files will be deleted after merging.
-// 将多个文件按顺序合并到目标文件, cleanup 为 true 时删除源分片.
-func MergeFiles(outputPath string, parts []string, cleanup bool) error {
-	out, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	for _, p := range parts {
-		in, err := os.Open(p)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(out, in)
-		in.Close()
-		if err != nil {
-			return err
-		}
-	}
-
-	if cleanup {
-		for _, p := range parts {
-			_ = os.Remove(p)
-		}
-	}
-
-	return nil
 }
