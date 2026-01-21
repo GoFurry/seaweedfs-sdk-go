@@ -271,7 +271,7 @@ func (s *SeaweedFSService) UploadReaderSmart(
 		headers = make(map[string]string)
 	}
 
-	// Choose upload strategy based on size
+	// Choose upload strategy based on size / 根据大小选择上传策略
 	if size <= largeThreshold {
 		return s.UploadWithOptions(ctx, method, dst, r, opts, headers)
 	}
@@ -316,7 +316,7 @@ func (s *SeaweedFSService) UploadLocalFile(
 		return err
 	}
 
-	// Auto-detect Content-Type if missing
+	// Auto-detect Content-Type if missing / 自动嗅探Content-Type
 	if headers == nil {
 		headers = make(map[string]string)
 	}
