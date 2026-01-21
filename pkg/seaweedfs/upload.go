@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -247,4 +248,94 @@ func (s *SeaweedFSService) UploadFileSmart(
 				UseOffset: true,
 			})
 	}
+}
+
+// UploadReaderSmart uploads data from an io.Reader intelligently.
+// It chooses normal upload or large upload based on size.
+// 智能上传 Reader 数据, 根据大小选择普通或分片上传.
+func (s *SeaweedFSService) UploadReaderSmart(
+	ctx context.Context,
+	method UploadMethod, // HTTP method / HTTP 方法
+	dst string, // Destination path / 目标路径
+	r io.Reader, // Source reader / 数据源
+	size int64, // Total size / 数据总大小
+	largeThreshold int64, // Threshold for large upload / 大文件阈值
+	chunkSize int64, // Chunk size / 分片大小
+	opts map[string]string, // Optional query parameters / 可选查询参数
+	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+) error {
+
+	dst = util.NormalizePath(dst)
+
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+
+	// Choose upload strategy based on size
+	if size <= largeThreshold {
+		return s.UploadWithOptions(ctx, method, dst, r, opts, headers)
+	}
+
+	return s.UploadLarge(
+		ctx,
+		method,
+		dst,
+		r,
+		size,
+		chunkSize,
+		opts,
+		headers,
+		&UploadLargeOptions{
+			MaxRetry:  3,
+			UseOffset: true,
+		},
+	)
+}
+
+// UploadLocalFile uploads a local file from filesystem.
+// 从本地文件系统上传文件.
+func (s *SeaweedFSService) UploadLocalFile(
+	ctx context.Context,
+	method UploadMethod, // HTTP method / HTTP 方法
+	dst string, // Destination path / 目标路径
+	localPath string, // Local file path / 本地文件路径
+	largeThreshold int64, // Threshold for large upload / 大文件阈值
+	chunkSize int64, // Chunk size / 分片大小
+	opts map[string]string, // Optional query parameters / 可选查询参数
+	headers map[string]string, // Optional HTTP headers / 可选 HTTP 头
+) error {
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Auto-detect Content-Type if missing
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	if _, ok := headers["Content-Type"]; !ok {
+		buf := make([]byte, 512)
+		n, _ := file.Read(buf)
+		headers["Content-Type"] = http.DetectContentType(buf[:n])
+		file.Seek(0, io.SeekStart)
+	}
+
+	return s.UploadReaderSmart(
+		ctx,
+		method,
+		dst,
+		file,
+		stat.Size(),
+		largeThreshold,
+		chunkSize,
+		opts,
+		headers,
+	)
 }

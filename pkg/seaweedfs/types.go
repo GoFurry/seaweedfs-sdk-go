@@ -44,3 +44,11 @@ type ListPagedResult struct {
 	Last    string         // Name of the last entry / 本页最后一个条目的名称
 	HasMore bool           // Whether there are more pages / 是否还有更多分页
 }
+
+// DirUsage represents a file or directory Usage
+// 表示文件或目录的使用情况
+type DirUsage struct {
+	TotalSize int64 // 总大小
+	FileCount int64 // 文件数量
+	DirCount  int64 // 目录数量
+}
